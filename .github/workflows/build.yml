@@ -42,19 +42,41 @@ jobs:
 
     - name: Package Build Artifacts
       run: |
-        if not exist driver_dist\x64 mkdir driver_dist\x64
-        if not exist driver_dist\inc mkdir driver_dist\inc
-        if not exist driver_dist\cert mkdir driver_dist\cert
-        xcopy /Y /I driver\kmdf\x64\Release\vmulti\*.* driver_dist\x64\
-        copy client\x64\Release\vmulticlient.lib driver_dist\x64\
-        copy test\x64\Release\testvmulti.exe driver_dist\x64\
-        copy inc\*.h driver_dist\inc\ /Y
-        if exist driver\kmdf\x64\Release\vmulti.cer (
-          copy driver\kmdf\x64\Release\vmulti.cer driver_dist\cert\WDKTestCert.cer /Y
-        ) else (
-          echo Warning: vmulti.cer not found, skipping certificate packaging.
+        New-Item -ItemType Directory -Path 'driver_dist/x64' -Force | Out-Null
+        New-Item -ItemType Directory -Path 'driver_dist/inc' -Force | Out-Null
+        New-Item -ItemType Directory -Path 'driver_dist/cert' -Force | Out-Null
+
+        $driverCandidates = @(
+          'driver/kmdf/x64/Release/vmulti',
+          'x64/Release/vmulti',
+          'driver/kmdf/x64/Release'
         )
-      shell: cmd
+
+        $driverPackageDir = $driverCandidates | Where-Object { Test-Path (Join-Path $_ 'vmulti.inf') } | Select-Object -First 1
+        if (-not $driverPackageDir) {
+          $driverInf = Get-ChildItem -Path . -Filter 'vmulti.inf' -Recurse -File | Select-Object -First 1
+          if ($driverInf) {
+            $driverPackageDir = $driverInf.DirectoryName
+          }
+        }
+
+        if (-not $driverPackageDir) {
+          throw 'Could not find built driver package directory containing vmulti.inf.'
+        }
+
+        Write-Host "Using driver package directory: $driverPackageDir"
+        Copy-Item -Path (Join-Path $driverPackageDir '*') -Destination 'driver_dist/x64' -Recurse -Force
+        Copy-Item -Path 'client/x64/Release/vmulticlient.lib' -Destination 'driver_dist/x64' -Force
+        Copy-Item -Path 'test/x64/Release/testvmulti.exe' -Destination 'driver_dist/x64' -Force
+        Copy-Item -Path 'inc/*.h' -Destination 'driver_dist/inc' -Force
+
+        $certSource = 'driver/kmdf/x64/Release/vmulti.cer'
+        if (Test-Path $certSource) {
+          Copy-Item -Path $certSource -Destination 'driver_dist/cert/WDKTestCert.cer' -Force
+        } else {
+          Write-Host 'Warning: vmulti.cer not found, skipping certificate packaging.'
+        }
+      shell: pwsh
 
     - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
