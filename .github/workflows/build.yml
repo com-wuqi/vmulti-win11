@@ -27,28 +27,36 @@ jobs:
         winget install Microsoft.WindowsWDK.10.0.28000 --accept-source-agreements --accept-package-agreements
       shell: pwsh
 
-    - name: Fix hardcoded paths in source code
+    - name: Patch project files for CI compatibility
       run: |
-        Write-Host "Fixing hardcoded absolute paths in vmulti.h..."
+        Write-Host "=== Patching vmulti.h ==="
         $headerFile = "driver\kmdf\vmulti.h"
-        $content = Get-Content $headerFile -Raw
-        
-        # 替换硬编码的 wdm.h 路径为标准内核头文件引用
-        $content = $content -replace '#include "C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\10\.0\.26100\.0\\km\\wdm\.h"', '#include <wdm.h>'
-        
-        # 替换硬编码的 wdf.h 路径为标准 WDF 头文件引用
-        $content = $content -replace '#include "C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\wdf\\kmdf\\1\.15\\wdf\.h"', '#include <wdf.h>'
-        
-        Set-Content -Path $headerFile -Value $content
-        Write-Host "Successfully fixed include paths in $headerFile"
-        
-        Write-Host "Fixing hardcoded paths in vmulti.vcxproj..."
+        $hContent = Get-Content $headerFile -Raw
+        # 替换硬编码的绝对路径为标准 C 引用
+        $hContent = $hContent -replace '#include "C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\10\.0\.26100\.0\\km\\wdm\.h"', '#include <wdm.h>'
+        $hContent = $hContent -replace '#include "C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\wdf\\kmdf\\1\.15\\wdf\.h"', '#include <wdf.h>'
+        Set-Content -Path $headerFile -Value $hContent -NoNewline
+
+        Write-Host "=== Patching vmulti.vcxproj ==="
         $vcxproj = "driver\kmdf\vmulti.vcxproj"
-        $projContent = Get-Content $vcxproj -Raw
-        $projContent = $projContent -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\10\.0\.26100\.0\\km', '$(WindowsSDK_KM_IncludePath)'
-        $projContent = $projContent -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\10\.0\.26100\.0\\shared', '$(WindowsSDK_Shared_IncludePath)'
-        Set-Content -Path $vcxproj -Value $projContent
-        Write-Host "Successfully fixed include paths in $vcxproj"
+        $content = Get-Content $vcxproj -Raw
+        
+        # 1. 修复头文件路径宏 (使用正确的 WDK 标准宏 $(KM_IncludePath))
+        $content = $content -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\10\.0\.26100\.0\\km', '$(KM_IncludePath)'
+        $content = $content -replace '\$\(WindowsSDK_KM_IncludePath\)', '$(KM_IncludePath)'
+        
+        $content = $content -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\10\.0\.26100\.0\\shared', '$(WindowsSDK_IncludePath)'
+        $content = $content -replace '\$\(WindowsSDK_Shared_IncludePath\)', '$(WindowsSDK_IncludePath)'
+        
+        $content = $content -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\wdf\\kmdf\\1\.15', '$(WdfDirPath)'
+        
+        # 2. 在项目全局属性中强制注入 <RunInfVerif>false</RunInfVerif>，彻底绕过损坏的 DLL 加载
+        if ($content -notmatch '<RunInfVerif>false</RunInfVerif>') {
+            $content = $content -replace '</ProjectGuid>', "</ProjectGuid>`r`n    <RunInfVerif>false</RunInfVerif>"
+        }
+        
+        Set-Content -Path $vcxproj -Value $content -NoNewline
+        Write-Host "Successfully patched project files."
       shell: pwsh
 
     - name: Build x64 Client, Driver, and Test App
@@ -57,7 +65,6 @@ jobs:
         msbuild client\vmulticlient.vcxproj /p:Configuration=Release /p:Platform=x64 /m
         
         Write-Host "=== Building x64 driver ==="
-        # /p:RunInfVerif=false 是关键：跳过 CI 环境中必然失败的 32位 InfVerif.dll 加载
         msbuild driver\kmdf\vmulti.vcxproj /p:Configuration=Release /p:Platform=x64 /p:TestSign=false /p:RunInfVerif=false /m
         
         Write-Host "=== Building x64 test application ==="
