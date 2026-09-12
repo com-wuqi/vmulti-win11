@@ -23,8 +23,8 @@ jobs:
     - name: Install Windows Driver Kit (WDK)
       run: |
         # 静默安装 Windows 11 SDK 和 WDK
-        winget install Microsoft.WindowsSDK.10.0.28000 --accept-source-agreements --accept-package-agreements
-        winget install Microsoft.WindowsWDK.10.0.28000 --accept-source-agreements --accept-package-agreements
+        winget install Microsoft.WindowsSDK.10.0.26100 --accept-source-agreements --accept-package-agreements
+        winget install Microsoft.WindowsWDK.10.0.26100 --accept-source-agreements --accept-package-agreements
       shell: pwsh
 
     - name: Build x64 Driver and Client
