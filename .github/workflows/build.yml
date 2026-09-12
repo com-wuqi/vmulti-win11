@@ -60,5 +60,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: vmulti-win11-x64-build
-        path: driver_dist/
+        path: driver_dist
         retention-days: 7
