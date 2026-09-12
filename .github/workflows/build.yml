@@ -42,14 +42,18 @@ jobs:
 
     - name: Package Build Artifacts
       run: |
-        mkdir driver_dist\x64
-        mkdir driver_dist\inc
-        mkdir driver_dist\cert
+        if not exist driver_dist\x64 mkdir driver_dist\x64
+        if not exist driver_dist\inc mkdir driver_dist\inc
+        if not exist driver_dist\cert mkdir driver_dist\cert
         xcopy /Y /I driver\kmdf\x64\Release\vmulti\*.* driver_dist\x64\
         copy client\x64\Release\vmulticlient.lib driver_dist\x64\
         copy test\x64\Release\testvmulti.exe driver_dist\x64\
         copy inc\*.h driver_dist\inc\ /Y
-        copy driver\kmdf\x64\Release\vmulti.cer driver_dist\cert\WDKTestCert.cer /Y
+        if exist driver\kmdf\x64\Release\vmulti.cer (
+          copy driver\kmdf\x64\Release\vmulti.cer driver_dist\cert\WDKTestCert.cer /Y
+        ) else (
+          echo Warning: vmulti.cer not found, skipping certificate packaging.
+        )
       shell: cmd
 
     - name: Upload Build Artifacts
