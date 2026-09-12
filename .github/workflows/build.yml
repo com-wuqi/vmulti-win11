@@ -20,43 +20,58 @@ jobs:
     - name: Setup Developer Command Prompt
       uses: ilammy/msvc-dev-cmd@v1
 
-    - name: Install Windows Driver Kit (WDK)
+    - name: Install Windows SDK and WDK
       run: |
         Write-Host "Installing Windows SDK and WDK..."
         winget install Microsoft.WindowsSDK.10.0.28000 --accept-source-agreements --accept-package-agreements
         winget install Microsoft.WindowsWDK.10.0.28000 --accept-source-agreements --accept-package-agreements
       shell: pwsh
 
-    - name: Patch project files for CI compatibility
+    - name: Install x86 VC++ Redistributable (Fixes InfVerif.dll error)
       run: |
-        Write-Host "=== Patching vmulti.h ==="
-        $headerFile = "driver\kmdf\vmulti.h"
-        $hContent = Get-Content $headerFile -Raw
-        # 替换硬编码的绝对路径为标准 C 引用
+        Write-Host "Installing x86 VC++ Redist to fix InfVerif.dll loading issue..."
+        winget install Microsoft.VCRedist.2015+.x86 --accept-source-agreements --accept-package-agreements
+      shell: pwsh
+
+    - name: Patch source code and project files (Robust XML/Regex method)
+      run: |
+        Write-Host "=== 1. Patching vmulti.h ==="
+        $hPath = "driver\kmdf\vmulti.h"
+        $hContent = Get-Content $hPath -Raw
+        # 替换硬编码的绝对路径为标准 C 包含
         $hContent = $hContent -replace '#include "C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\10\.0\.26100\.0\\km\\wdm\.h"', '#include <wdm.h>'
         $hContent = $hContent -replace '#include "C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\wdf\\kmdf\\1\.15\\wdf\.h"', '#include <wdf.h>'
-        Set-Content -Path $headerFile -Value $hContent -NoNewline
+        Set-Content -Path $hPath -Value $hContent -NoNewline
+        Write-Host "vmulti.h patched successfully."
 
-        Write-Host "=== Patching vmulti.vcxproj ==="
-        $vcxproj = "driver\kmdf\vmulti.vcxproj"
-        $content = Get-Content $vcxproj -Raw
+        Write-Host "=== 2. Patching vmulti.vcxproj using XML ==="
+        $projPath = "driver\kmdf\vmulti.vcxproj"
+        $xml = [xml](Get-Content $projPath -Raw)
         
-        # 1. 修复头文件路径宏 (使用正确的 WDK 标准宏 $(KM_IncludePath))
-        $content = $content -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\10\.0\.26100\.0\\km', '$(KM_IncludePath)'
-        $content = $content -replace '\$\(WindowsSDK_KM_IncludePath\)', '$(KM_IncludePath)'
-        
-        $content = $content -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\10\.0\.26100\.0\\shared', '$(WindowsSDK_IncludePath)'
-        $content = $content -replace '\$\(WindowsSDK_Shared_IncludePath\)', '$(WindowsSDK_IncludePath)'
-        
-        $content = $content -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\wdf\\kmdf\\1\.15', '$(WdfDirPath)'
-        
-        # 2. 在项目全局属性中强制注入 <RunInfVerif>false</RunInfVerif>，彻底绕过损坏的 DLL 加载
-        if ($content -notmatch '<RunInfVerif>false</RunInfVerif>') {
-            $content = $content -replace '</ProjectGuid>', "</ProjectGuid>`r`n    <RunInfVerif>false</RunInfVerif>"
+        # 修复所有包含 IncludePath 的 PropertyGroup
+        $propertyGroups = $xml.Project.PropertyGroup | Where-Object { $_.IncludePath }
+        foreach ($pg in $propertyGroups) {
+            $path = $pg.IncludePath
+            # 替换为 WDK 标准宏
+            $path = $path -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\10\.0\.26100\.0\\km', '$(KM_IncludePath)'
+            $path = $path -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\10\.0\.26100\.0\\shared', '$(WindowsSDK_IncludePath)'
+            # 替换 WDF 路径为基于 WindowsSdkDir 的动态路径
+            $path = $path -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\wdf\\kmdf\\1\.15', '$(WindowsSdkDir)Include\wdf\kmdf\1.15'
+            $pg.IncludePath = $path
         }
         
-        Set-Content -Path $vcxproj -Value $content -NoNewline
-        Write-Host "Successfully patched project files."
+        # 强制在项目全局属性中禁用 InfVerif (双重保险)
+        $globals = $xml.Project.PropertyGroup | Where-Object { $_.Label -eq 'Globals' }
+        if ($globals) {
+            if (-not $globals.RunInfVerif) {
+                $node = $xml.CreateElement('RunInfVerif')
+                $node.InnerText = 'false'
+                $globals.AppendChild($node) | Out-Null
+            }
+        }
+        
+        $xml.Save($projPath)
+        Write-Host "vmulti.vcxproj patched successfully using XML manipulation."
       shell: pwsh
 
     - name: Build x64 Client, Driver, and Test App
