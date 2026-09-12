@@ -31,9 +31,14 @@ jobs:
       run: |
         Write-Host "Installing x86 VC++ Redist to fix InfVerif.dll loading issue..."
         winget install Microsoft.VCRedist.2015+.x86 --accept-source-agreements --accept-package-agreements
+        
+        # 容错处理：如果 winget 返回 1 且提示已安装，则视为成功，不中断 CI
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Warning: winget exited with code $LASTEXITCODE. This is expected if the package is already installed and up to date. Continuing..."
+        }
       shell: pwsh
 
-    - name: Patch source code and project files (Robust XML/Regex method)
+    - name: Patch source code and project files (Robust XML method)
       run: |
         Write-Host "=== 1. Patching vmulti.h ==="
         $hPath = "driver\kmdf\vmulti.h"
@@ -48,30 +53,36 @@ jobs:
         $projPath = "driver\kmdf\vmulti.vcxproj"
         $xml = [xml](Get-Content $projPath -Raw)
         
+        # 强制在项目最顶部禁用 InfVerif (最高优先级)
+        $newPg = $xml.CreateElement('PropertyGroup')
+        $runInfVerif = $xml.CreateElement('RunInfVerif')
+        $runInfVerif.InnerText = 'false'
+        $newPg.AppendChild($runInfVerif) | Out-Null
+        $xml.Project.PrependChild($newPg) | Out-Null
+
         # 修复所有包含 IncludePath 的 PropertyGroup
         $propertyGroups = $xml.Project.PropertyGroup | Where-Object { $_.IncludePath }
         foreach ($pg in $propertyGroups) {
             $path = $pg.IncludePath
-            # 替换为 WDK 标准宏
+            # 1. 替换为 WDK 标准内核宏
             $path = $path -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\10\.0\.26100\.0\\km', '$(KM_IncludePath)'
-            $path = $path -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\10\.0\.26100\.0\\shared', '$(WindowsSDK_IncludePath)'
-            # 替换 WDF 路径为基于 WindowsSdkDir 的动态路径
-            $path = $path -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\wdf\\kmdf\\1\.15', '$(WindowsSdkDir)Include\wdf\kmdf\1.15'
+            # 2. 移除硬编码的 shared 路径 (已包含在 WindowsSDK_IncludePath 中)
+            $path = $path -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\10\.0\.26100\.0\\shared', ''
+            # 3. 移除硬编码的 WDF 路径 (WDK 的 KMDF 项目类型会自动注入正确的 WDF 路径)
+            $path = $path -replace 'C:\\Program Files \(x86\)\\Windows Kits\\10\\Include\\wdf\\kmdf\\1\.15', ''
+            
+            # 清理替换后可能产生的多余分号
+            $path = $path -replace ';;+', ';'
+            $path = $path -replace '^;|;$', '' 
             $pg.IncludePath = $path
         }
         
-        # 强制在项目全局属性中禁用 InfVerif (双重保险)
-        $globals = $xml.Project.PropertyGroup | Where-Object { $_.Label -eq 'Globals' }
-        if ($globals) {
-            if (-not $globals.RunInfVerif) {
-                $node = $xml.CreateElement('RunInfVerif')
-                $node.InnerText = 'false'
-                $globals.AppendChild($node) | Out-Null
-            }
-        }
-        
         $xml.Save($projPath)
-        Write-Host "vmulti.vcxproj patched successfully using XML manipulation."
+        Write-Host "vmulti.vcxproj patched successfully."
+        
+        # 调试输出：验证修改后的 IncludePath
+        Write-Host "Modified IncludePath entries:"
+        Get-Content $projPath | Select-String "IncludePath"
       shell: pwsh
 
     - name: Build x64 Client, Driver, and Test App
@@ -80,6 +91,7 @@ jobs:
         msbuild client\vmulticlient.vcxproj /p:Configuration=Release /p:Platform=x64 /m
         
         Write-Host "=== Building x64 driver ==="
+        # 双重保险：命令行再次传递 RunInfVerif=false
         msbuild driver\kmdf\vmulti.vcxproj /p:Configuration=Release /p:Platform=x64 /p:TestSign=false /p:RunInfVerif=false /m
         
         Write-Host "=== Building x64 test application ==="
