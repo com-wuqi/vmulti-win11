@@ -32,12 +32,15 @@ jobs:
         # 直接调用 msbuild 绕过 build.bat 中的本地管理员权限检查 (net session)，使 CI 更稳定
         echo Building client library...
         msbuild client\vmulticlient.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+        if errorlevel 1 exit /b 1
         
         echo Building x64 driver...
         msbuild driver\kmdf\vmulti.vcxproj /p:Configuration=Release /p:Platform=x64 /p:TestSign=false /m
+        if errorlevel 1 exit /b 1
         
         echo Building x64 test application...
         msbuild test\testvmulti.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+        if errorlevel 1 exit /b 1
       shell: cmd
 
     - name: Package Build Artifacts
@@ -46,26 +49,45 @@ jobs:
         New-Item -ItemType Directory -Path 'driver_dist/inc' -Force | Out-Null
         New-Item -ItemType Directory -Path 'driver_dist/cert' -Force | Out-Null
 
-        $driverCandidates = @(
+        $driverSysCandidates = @(
+          'driver/kmdf/x64/Release/vmulti/vmulti.sys',
+          'driver/kmdf/x64/Release/vmulti.sys',
+          'x64/Release/vmulti/vmulti.sys',
+          'x64/Release/vmulti.sys'
+        )
+        $driverSys = $driverSysCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+        if (-not $driverSys) {
+          $driverSys = Get-ChildItem -Path . -Filter 'vmulti.sys' -Recurse -File |
+            Where-Object { $_.FullName -match '\\(x64|Release)\\' } |
+            Select-Object -First 1 -ExpandProperty FullName
+        }
+
+        if (-not $driverSys) {
+          throw 'Could not find built vmulti.sys.'
+        }
+
+        Write-Host "Using driver binary: $driverSys"
+        Copy-Item -Path $driverSys -Destination 'driver_dist/x64/vmulti.sys' -Force
+
+        $driverPackageCandidates = @(
+          (Split-Path -Parent $driverSys),
+          (Join-Path (Split-Path -Parent $driverSys) 'vmulti'),
           'driver/kmdf/x64/Release/vmulti',
-          'x64/Release/vmulti',
-          'driver/kmdf/x64/Release'
+          'x64/Release/vmulti'
         )
 
-        $driverPackageDir = $driverCandidates | Where-Object { Test-Path (Join-Path $_ 'vmulti.inf') } | Select-Object -First 1
-        if (-not $driverPackageDir) {
-          $driverInf = Get-ChildItem -Path . -Filter 'vmulti.inf' -Recurse -File | Select-Object -First 1
-          if ($driverInf) {
-            $driverPackageDir = $driverInf.DirectoryName
+        $driverPackageDir = $driverPackageCandidates | Where-Object { Test-Path (Join-Path $_ 'vmulti.inf') } | Select-Object -First 1
+        if ($driverPackageDir) {
+          Write-Host "Using driver package directory: $driverPackageDir"
+          Copy-Item -Path (Join-Path $driverPackageDir 'vmulti.inf') -Destination 'driver_dist/x64' -Force
+          if (Test-Path (Join-Path $driverPackageDir 'vmulti.cat')) {
+            Copy-Item -Path (Join-Path $driverPackageDir 'vmulti.cat') -Destination 'driver_dist/x64' -Force
           }
+        } else {
+          Copy-Item -Path 'driver/kmdf/vmulti.inf' -Destination 'driver_dist/x64' -Force
         }
 
-        if (-not $driverPackageDir) {
-          throw 'Could not find built driver package directory containing vmulti.inf.'
-        }
-
-        Write-Host "Using driver package directory: $driverPackageDir"
-        Copy-Item -Path (Join-Path $driverPackageDir '*') -Destination 'driver_dist/x64' -Recurse -Force
         Copy-Item -Path 'client/x64/Release/vmulticlient.lib' -Destination 'driver_dist/x64' -Force
         Copy-Item -Path 'test/x64/Release/testvmulti.exe' -Destination 'driver_dist/x64' -Force
         Copy-Item -Path 'inc/*.h' -Destination 'driver_dist/inc' -Force
